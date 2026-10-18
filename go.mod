@@ -1,4 +1,4 @@
-module onebotfiler
+module onebotfilter
 
 go 1.25.1
 

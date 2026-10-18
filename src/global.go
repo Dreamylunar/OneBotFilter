@@ -29,6 +29,9 @@ const (
 	MESSAGE_TYPE_TEXT     = "text"
 )
 
+// 被过滤器拦截时，回传给bot应用的action响应retcode
+const RETCODE_BLOCKED = 1403
+
 // 布尔值
 var (
 	TRUE  = true

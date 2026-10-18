@@ -82,6 +82,9 @@ type BotAppsConfig struct {
 	// 保留顶层 message 以向后兼容历史版本的配置
 	//若 private/group 未单独配置 message，则使用此项
 	Message MessageConfig `mapstructure:"message" yaml:"message"`
+	// 是否通过不含group_id/user_id的数据（如meta_event、action响应）。
+	// 仅作用于 OneBot客户端→bot应用 方向；未配置时默认为 true。
+	PassNoIdEvent *bool `mapstructure:"pass-no-id-event" yaml:"pass-no-id-event"`
 }
 
 type IdConfig struct {
@@ -174,6 +177,10 @@ func (bac *BotAppsConfig) Check() error {
 		// ok
 	default:
 		return fmt.Errorf("%s.group-message.mode配置错误，只能是 on、off、whitelist 或 blacklist", bac.Name)
+	}
+	if bac.PassNoIdEvent == nil {
+		pass := true
+		bac.PassNoIdEvent = &pass
 	}
 	return nil
 }

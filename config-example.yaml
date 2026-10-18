@@ -45,6 +45,7 @@ bot-apps:  #bot应用端配置
     group-id:
       mode: "default" # 使用default配置
       ids: [] # 由于使用default配置，此处的ids会被忽略。（建议删掉这里的ids）
+    pass-no-id-event: true # 是否通过不含group_id/user_id的数据（如meta_event、action响应），默认true
     private-message: # 单独设置的私聊过滤器，会覆盖message过滤器
       mode: "whitelist" #只能是on、off、whitelist或blacklist，设置为whitelist时，只允许过滤器匹配成功的消息
       filters: [ "/", "pjsk" ]

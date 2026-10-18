@@ -16,6 +16,7 @@ type Filter struct {
 	GroupId        IdFilter
 	PrivateMessage MessageFilter
 	GroupMessage   MessageFilter
+	PassNoIdEvent  bool // 是否通过不含id的数据（仅方向A）
 	// Message MessageFilter 直接使用各自的message配置，在check时已经自动继承
 }
 
@@ -128,7 +129,49 @@ func (f *Filter) Compile(cfg BotAppsConfig) *Filter {
 	f.GroupId = IdFilter{cfg.GroupId}
 	f.PrivateMessage.Compile(cfg.PrivateMessage)
 	f.GroupMessage.Compile(cfg.GroupMessage)
+	f.PassNoIdEvent = true
+	if cfg.PassNoIdEvent != nil {
+		f.PassNoIdEvent = *cfg.PassNoIdEvent
+	}
 	return f
+}
+
+// AllowIds 检查群/用户黑白名单；id 为 0 时跳过该项检查。
+func (f *Filter) AllowIds(groupId, userId int64) bool {
+	if groupId != 0 && !f.GroupId.Filter(groupId) {
+		if CONFIG.Server.Debug {
+			log.Printf("%s：群 %d 被账号黑白名单拦截\n", f.Name, groupId)
+		}
+		return false
+	}
+	if userId != 0 && !f.UserId.Filter(userId) {
+		if CONFIG.Server.Debug {
+			log.Printf("%s：QQ %d 被账号黑白名单拦截\n", f.Name, userId)
+		}
+		return false
+	}
+	return true
+}
+
+// FilterEventFromOneBot 处理方向A中的非消息数据，返回是否放行。
+func (f *Filter) FilterEventFromOneBot(raw []byte) bool {
+	groupId, userId, ok := ParseIds(raw)
+	if !ok {
+		return true
+	}
+	if groupId == 0 && userId == 0 {
+		return f.PassNoIdEvent
+	}
+	return f.AllowIds(groupId, userId)
+}
+
+// FilterFromBotApp 处理方向B中bot应用发出的数据，返回是否放行。
+func (f *Filter) FilterFromBotApp(raw []byte) bool {
+	groupId, userId, ok := ParseOutboundIds(raw)
+	if !ok {
+		return true
+	}
+	return f.AllowIds(groupId, userId)
 }
 
 func (f *MessageFilter) Compile(cfg MessageConfig) *MessageFilter {
