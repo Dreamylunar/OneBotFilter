@@ -16,6 +16,7 @@ type Filter struct {
 	GroupId        IdFilter
 	PrivateMessage MessageFilter
 	GroupMessage   MessageFilter
+	OutMessage     OutMessageFilter
 	PassNoIdEvent  bool // 是否通过不含id的数据（仅方向A）
 	// Message MessageFilter 直接使用各自的message配置，在check时已经自动继承
 }
@@ -25,10 +26,30 @@ type IdFilter struct {
 	IdConfig
 }
 
+// compileRegexps 编译正则表达式列表，编译失败则记录日志并跳过。
+func compileRegexps(filters []string) []*regexp.Regexp {
+	regexps := []*regexp.Regexp{}
+	for _, filter := range filters {
+		pattern, err := regexp.Compile(filter, regexp.None)
+		if err != nil {
+			log.Printf("编译正则表达式：%s，出错：%v\n", filter, err)
+			continue
+		}
+		regexps = append(regexps, pattern)
+	}
+	return regexps
+}
+
 // 消息内容过滤器
 type MessageFilter struct {
 	MessageConfig
 	// MessageContentFilter // MessageTypeConfig里已经有MessageContentConfig了，直接自己带regexps好了
+	Regexps []*regexp.Regexp //编译后的正则表达式
+}
+
+// 输出消息过滤器
+type OutMessageFilter struct {
+	OutMessageConfig
 	Regexps []*regexp.Regexp //编译后的正则表达式
 }
 
@@ -129,6 +150,7 @@ func (f *Filter) Compile(cfg BotAppsConfig) *Filter {
 	f.GroupId = IdFilter{cfg.GroupId}
 	f.PrivateMessage.Compile(cfg.PrivateMessage)
 	f.GroupMessage.Compile(cfg.GroupMessage)
+	f.OutMessage.Compile(cfg.OutMessage)
 	f.PassNoIdEvent = true
 	if cfg.PassNoIdEvent != nil {
 		f.PassNoIdEvent = *cfg.PassNoIdEvent
@@ -165,27 +187,104 @@ func (f *Filter) FilterEventFromOneBot(raw []byte) bool {
 	return f.AllowIds(groupId, userId)
 }
 
-// FilterFromBotApp 处理方向B中bot应用发出的数据，返回是否放行。
-func (f *Filter) FilterFromBotApp(raw []byte) bool {
+// ProcessFromBotApp 处理bot应用发往OneBot客户端的数据。
+// 返回处理后的完整数据与是否放行；不放行时 out 为 nil。
+func (f *Filter) ProcessFromBotApp(raw []byte) (out []byte, pass bool) {
 	groupId, userId, ok := ParseOutboundIds(raw)
-	if !ok {
-		return true
+	if ok && !f.AllowIds(groupId, userId) {
+		return nil, false
 	}
-	return f.AllowIds(groupId, userId)
+	if !ok {
+		return raw, true
+	}
+	return f.applyOutMessage(raw)
+}
+
+// applyOutMessage 对出站帧的 params.message 做内容过滤与前缀拼接。
+func (f *Filter) applyOutMessage(raw []byte) ([]byte, bool) {
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &obj); err != nil {
+		return raw, true
+	}
+	paramsRaw, exists := obj["params"]
+	if !exists {
+		return raw, true
+	}
+	var params map[string]json.RawMessage
+	if err := json.Unmarshal(paramsRaw, &params); err != nil {
+		return raw, true
+	}
+	msgRaw, exists := params["message"]
+	if !exists {
+		return raw, true
+	}
+	// 字符串形式
+	var messageString string
+	if err := json.Unmarshal(msgRaw, &messageString); err == nil {
+		if !f.OutMessage.allowOutMessage(f.Name, messageString, []string{messageString}) {
+			return nil, false
+		}
+		if f.OutMessage.Prefix == "" {
+			return raw, true
+		}
+		newRaw, err := json.Marshal(f.OutMessage.Prefix + messageString)
+		if err != nil {
+			log.Printf("序列化%s的输出消息出错：%v\n", f.Name, err)
+			return raw, true
+		}
+		params["message"] = newRaw
+		return f.rebuildFrame(raw, obj, params)
+	}
+	// 数组形式
+	var messageArray []MessageContent
+	if err := json.Unmarshal(msgRaw, &messageArray); err == nil {
+		texts := make([]string, 0, len(messageArray))
+		for _, seg := range messageArray {
+			if seg.Type == MESSAGE_TYPE_TEXT {
+				if text, ok := seg.Data["text"].(string); ok {
+					texts = append(texts, text)
+				}
+			}
+		}
+		if !f.OutMessage.allowOutMessage(f.Name, string(msgRaw), texts) {
+			return nil, false
+		}
+		if f.OutMessage.Prefix == "" {
+			return raw, true
+		}
+		prefixSeg := MessageContent{Type: MESSAGE_TYPE_TEXT, Data: map[string]interface{}{"text": f.OutMessage.Prefix}}
+		messageArray = append([]MessageContent{prefixSeg}, messageArray...)
+		newRaw, err := json.Marshal(messageArray)
+		if err != nil {
+			log.Printf("序列化%s的输出消息出错：%v\n", f.Name, err)
+			return raw, true
+		}
+		params["message"] = newRaw
+		return f.rebuildFrame(raw, obj, params)
+	}
+	// 既非字符串也非数组：不处理
+	return raw, true
+}
+
+// rebuildFrame 将修改后的 params 写回整帧；出错时回退为原始数据并放行。
+func (f *Filter) rebuildFrame(raw []byte, obj, params map[string]json.RawMessage) ([]byte, bool) {
+	paramsRaw, err := json.Marshal(params)
+	if err != nil {
+		log.Printf("序列化%s的输出params出错：%v\n", f.Name, err)
+		return raw, true
+	}
+	obj["params"] = paramsRaw
+	out, err := json.Marshal(obj)
+	if err != nil {
+		log.Printf("序列化%s的输出消息出错：%v\n", f.Name, err)
+		return raw, true
+	}
+	return out, true
 }
 
 func (f *MessageFilter) Compile(cfg MessageConfig) *MessageFilter {
 	f.MessageConfig = cfg
-	newFilters := []*regexp.Regexp{}
-	for _, filter := range f.Filters {
-		pattern, err := regexp.Compile(filter, regexp.None)
-		if err != nil {
-			log.Printf("编译正则表达式：%s，出错：%v\n", filter, err)
-			continue
-		}
-		newFilters = append(newFilters, pattern)
-	}
-	f.Regexps = newFilters
+	f.Regexps = compileRegexps(f.Filters)
 	return f
 }
 func (f *Filter) String() string {
@@ -198,7 +297,10 @@ private-message: %s
 	prefix: [ %s ], replace: %s
 group-message: %s
 	filters: [ %s ]
-	prefix: [ %s ], replace: %s`,
+	prefix: [ %s ], replace: %s
+out-message: %s
+	filters: [ %s ]
+	prefix: %s`,
 		f.Name,
 		f.UserId.Mode, f.UserId.Ids,
 		f.GroupId.Mode, f.GroupId.Ids,
@@ -208,6 +310,9 @@ group-message: %s
 		f.GroupMessage.Mode,
 		strings.Join(f.GroupMessage.Filters, ", "),
 		strings.Join(f.GroupMessage.Prefix, ", "), f.GroupMessage.PrefixReplace,
+		f.OutMessage.Mode,
+		strings.Join(f.OutMessage.Filters, ", "),
+		f.OutMessage.Prefix,
 	)
 }
 
@@ -307,24 +412,61 @@ func (mf *MessageFilter) prefixPass(onebotMessage *OneBotMessage) bool {
 	return true
 }
 
+// matchText 对单个文本段执行过滤器正则；返回 nil 表示未命中。
+// 命中时：whitelist 返回 &TRUE，blacklist 返回 &FALSE。
+func matchText(name, mode, rawMessage, text string, regexps []*regexp.Regexp) *bool {
+	for _, pattern := range regexps {
+		if ok, err := pattern.MatchString(text); ok {
+			switch mode {
+			case WHITELIST:
+				log.Printf("%s：白名单的消息：%s\n", name, rawMessage)
+				return &TRUE
+			case BLACKLIST:
+				log.Printf("%s：黑名单的消息：%s\n", name, rawMessage)
+				return &FALSE
+			}
+		} else if err != nil {
+			log.Printf("过滤器%s正则匹配出错的消息：%s\n", pattern.String(), rawMessage)
+		}
+	}
+	return nil
+}
+
 // 处理对单个text消息的正则匹配
 func (mf *MessageFilter) processFilter(Name, Text, RawMessage string) *bool {
 	if mf == nil {
 		return nil
 	}
-	for _, pattern := range mf.Regexps {
-		if ok, err := pattern.MatchString(Text); ok {
-			switch mf.Mode {
-			case WHITELIST:
-				log.Printf("%s：白名单的消息：%s\n", Name, RawMessage)
-				return &TRUE
-			case BLACKLIST:
-				log.Printf("%s：黑名单的消息：%s\n", Name, RawMessage)
-				return &FALSE
+	return matchText(Name, mf.Mode, RawMessage, Text, mf.Regexps)
+}
+
+func (f *OutMessageFilter) Compile(cfg OutMessageConfig) {
+	f.OutMessageConfig = cfg
+	f.Regexps = compileRegexps(f.Filters)
+}
+
+// allowOutMessage 依据模式与正则判断输出消息的一组文本段是否放行。
+func (f *OutMessageFilter) allowOutMessage(name, rawMessage string, texts []string) bool {
+	switch f.Mode {
+	case "", ON:
+		return true
+	case OFF:
+		return false
+	case WHITELIST:
+		for _, text := range texts {
+			if r := matchText(name, f.Mode, rawMessage, text, f.Regexps); r != nil && *r {
+				return true
 			}
-		} else if err != nil {
-			log.Printf("过滤器%s正则匹配出错的消息：%s\n", pattern.String(), RawMessage)
 		}
+		return false
+	case BLACKLIST:
+		for _, text := range texts {
+			if r := matchText(name, f.Mode, rawMessage, text, f.Regexps); r != nil && !*r {
+				return false
+			}
+		}
+		return true
 	}
-	return nil
+	log.Printf("%s的out-message.mode配置异常，必须为on、off、whitelist或blacklist\n", name)
+	return true
 }

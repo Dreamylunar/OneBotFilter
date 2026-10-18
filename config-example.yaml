@@ -55,4 +55,8 @@ bot-apps:  #bot应用端配置
       mode: "on"  # 只能是on、off、whitelist或blacklist，设置为on时，所有的消息都能通过
       # filters: # 设置为on或off时，无视filters
       # 自然也无视prefix和prefix-replace
+    out-message: # 对bot应用发往OneBot客户端的消息内容进行过滤
+      mode: "blacklist" # 只能是on、off、whitelist或blacklist，留空等同于on
+      filters: [ "广告", "\\d{6,}" ] # 使用正则匹配消息内容
+      prefix: "【Bot】" # 可选。放行的输出消息会在最前面拼接此前缀（不是前缀替换）
     # message: 已经为群聊和私聊单独设置了消息过滤器，这个将被忽略

@@ -79,6 +79,8 @@ type BotAppsConfig struct {
 	GroupId        IdConfig      `mapstructure:"group-id" yaml:"group-id"`
 	PrivateMessage MessageConfig `mapstructure:"private-message" yaml:"private-message"`
 	GroupMessage   MessageConfig `mapstructure:"group-message" yaml:"group-message"`
+	// 输出消息过滤器：对bot应用发往OneBot客户端的消息内容进行过滤（不区分私聊/群聊）
+	OutMessage OutMessageConfig `mapstructure:"out-message" yaml:"out-message"`
 	// 保留顶层 message 以向后兼容历史版本的配置
 	//若 private/group 未单独配置 message，则使用此项
 	Message MessageConfig `mapstructure:"message" yaml:"message"`
@@ -97,6 +99,12 @@ type MessageConfig struct {
 	Filters       []string `mapstructure:"filters" yaml:"filters"`
 	Prefix        []string `mapstructure:"prefix" yaml:"prefix"`
 	PrefixReplace string   `mapstructure:"prefix-replace" yaml:"prefix-replace"`
+}
+
+type OutMessageConfig struct {
+	Mode    string   `mapstructure:"mode" yaml:"mode"`       // on / off / whitelist / blacklist；留空 = on
+	Filters []string `mapstructure:"filters" yaml:"filters"` // 正则
+	Prefix  string   `mapstructure:"prefix" yaml:"prefix"`   // 可选，加在放行消息最前面的前缀
 }
 
 func (sc *ServerConfig) Check() error {
@@ -177,6 +185,12 @@ func (bac *BotAppsConfig) Check() error {
 		// ok
 	default:
 		return fmt.Errorf("%s.group-message.mode配置错误，只能是 on、off、whitelist 或 blacklist", bac.Name)
+	}
+	switch bac.OutMessage.Mode {
+	case "", ON, OFF, WHITELIST, BLACKLIST:
+		// ok
+	default:
+		return fmt.Errorf("%s.out-message.mode配置错误，只能是 on、off、whitelist 或 blacklist", bac.Name)
 	}
 	if bac.PassNoIdEvent == nil {
 		pass := true

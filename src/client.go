@@ -157,11 +157,18 @@ func (wc *WsClient) readLoop(ctx context.Context, wss *WsServer) {
 	for {
 		select {
 		case msg := <-wc.readChan:
-			// bot应用发往OneBot客户端的数据也要经过账号黑白名单过滤
-			if msg.MsgType == websocket.TextMessage && !wc.filter.FilterFromBotApp(msg.MsgData) {
-				// 被拦截的action回一个带原echo的失败响应，避免bot应用一直等待
-				if resp, ok := blockedResponse(msg.MsgData); ok {
-					wc.write(websocket.TextMessage, resp)
+			if msg.MsgType == websocket.TextMessage {
+				// bot应用发往OneBot客户端的数据要经过账号黑白名单与输出消息过滤器
+				out, pass := wc.filter.ProcessFromBotApp(msg.MsgData)
+				if !pass {
+					// 被拦截的action回一个带原echo的失败响应，避免bot应用一直等待
+					if resp, ok := blockedResponse(msg.MsgData); ok {
+						wc.write(websocket.TextMessage, resp)
+					}
+					continue
+				}
+				if err := wss.WriteMessage(msg.MsgType, out); err != nil {
+					log.Println("写入到OneBot客户端出错：", err)
 				}
 				continue
 			}

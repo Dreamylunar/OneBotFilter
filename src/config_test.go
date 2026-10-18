@@ -20,3 +20,18 @@ func TestPassNoIdEventDefault(t *testing.T) {
 		t.Fatalf("显式配置 false 应保留，得到 %v", bac2.PassNoIdEvent)
 	}
 }
+
+func TestOutMessageModeCheck(t *testing.T) {
+	for _, mode := range []string{"", ON, OFF, WHITELIST, BLACKLIST} {
+		bac := BotAppsConfig{Name: "x", Uri: "ws://x"}
+		bac.OutMessage.Mode = mode
+		if err := bac.Check(); err != nil {
+			t.Fatalf("mode=%q 应通过校验，得到 %v", mode, err)
+		}
+	}
+	bac := BotAppsConfig{Name: "x", Uri: "ws://x"}
+	bac.OutMessage.Mode = "nonsense"
+	if err := bac.Check(); err == nil {
+		t.Fatal("非法 out-message.mode 应报错")
+	}
+}
